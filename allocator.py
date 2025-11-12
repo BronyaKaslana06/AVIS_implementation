@@ -91,42 +91,81 @@ class Allocator:
                 
                 utility_matrix[i, j] = u_ij - self.alpha * f_ij
         
-        # 贪心算法求解（近似解）
-        # 简单策略：对每个用户独立选择效用最大的码率，同时满足总资源约束
+        # 动态规划求解多选择背包问题（论文Algorithm 1）
+        # dp[i][t] = 前i个用户使用至多t个资源块的最大效用
+        allocation_result = self._solve_multi_choice_knapsack(
+            users, utility_matrix, resources_per_bitrate
+        )
+        
+        return allocation_result
+    
+    def _solve_multi_choice_knapsack(self, users: List[User], 
+                                     utility_matrix: np.ndarray,
+                                     resources_per_bitrate: np.ndarray) -> AllocationResult:
+        """
+        多选择背包问题动态规划求解（论文Algorithm 1）
+        
+        状态定义: dp[i][t] = 前i个用户使用至多t个资源块的最大效用
+        状态转移: dp[i][t] = max_j { dp[i-1][t - c_ij] + u_ij }
+        
+        Args:
+            users: 用户列表
+            utility_matrix: 效用矩阵 [n_users, n_bitrates]
+            resources_per_bitrate: 资源需求矩阵 [n_users, n_bitrates]
+        
+        Returns:
+            最优分配结果
+        """
+        n_users = len(users)
+        n_bitrates = len(BITRATE_LEVELS)
+        T = self.total_resources
+        
+        # 初始化DP表: dp[i][t] = 前i个用户使用至多t资源的最大效用
+        # 使用-inf表示不可达状态
+        dp = np.full((n_users + 1, T + 1), -np.inf)
+        dp[0, :] = 0  # 0个用户，任意资源，效用为0
+        
+        # 记录选择路径: choice[i][t] = (j, prev_t)
+        # j: 用户i选择的码率索引; prev_t: 上一个状态的资源数
+        choice = {}
+        
+        # 动态规划填表
+        for i in range(1, n_users + 1):
+            user_idx = i - 1
+            for t in range(T + 1):
+                # 遍历用户i-1的所有码率选项j
+                for j in range(n_bitrates):
+                    u_ij = utility_matrix[user_idx, j]
+                    c_ij = int(resources_per_bitrate[user_idx, j])
+                    
+                    # 检查资源是否足够
+                    if c_ij <= t:
+                        prev_t = t - c_ij
+                        new_utility = dp[i-1, prev_t] + u_ij
+                        
+                        # 更新最优解
+                        if new_utility > dp[i, t]:
+                            dp[i, t] = new_utility
+                            choice[(i, t)] = (j, prev_t)
+        
+        # 回溯找到最优解
         allocation_result = AllocationResult()
+        current_t = T
         
-        # 为每个用户计算"效用/资源"比率，按贪心方式分配
-        user_options = []  # (user_idx, bitrate_idx, utility, resource_blocks)
-        
-        for i in range(n_users):
-            best_j = np.argmax(utility_matrix[i, :])
-            best_utility = utility_matrix[i, best_j]
-            best_bitrate = BITRATE_LEVELS[best_j]
-            resources_needed = resources_per_bitrate[i][best_j]
-            
-            user_options.append({
-                'user_idx': i,
-                'user_id': users[i].user_id,
-                'bitrate_idx': best_j,
-                'bitrate': best_bitrate,
-                'utility': best_utility,
-                'resources': resources_needed
-            })
-        
-        # 按效用贪心分配资源
-        user_options_sorted = sorted(user_options, key=lambda x: x['utility'], reverse=True)
-        
-        resources_remaining = self.total_resources
-        allocated_users = set()
-        
-        for option in user_options_sorted:
-            if option['resources'] <= resources_remaining:
-                allocation_result.user_allocations[option['user_id']] = option['resources']
-                allocation_result.user_bitrates[option['user_id']] = option['bitrate']
-                allocation_result.total_resources_used += option['resources']
-                resources_remaining -= option['resources']
-                allocated_users.add(option['user_idx'])
-                allocation_result.objective_value += option['utility']
+        # 从最后一个用户开始回溯
+        for i in range(n_users, 0, -1):
+            if (i, current_t) in choice:
+                j, prev_t = choice[(i, current_t)]
+                user_idx = i - 1
+                user_id = users[user_idx].user_id
+                
+                # 记录分配结果
+                allocation_result.user_bitrates[user_id] = BITRATE_LEVELS[j]
+                allocation_result.user_allocations[user_id] = int(resources_per_bitrate[user_idx, j])
+                allocation_result.total_resources_used += int(resources_per_bitrate[user_idx, j])
+                allocation_result.objective_value += utility_matrix[user_idx, j]
+                
+                current_t = prev_t
         
         return allocation_result
     
@@ -169,6 +208,9 @@ class Allocator:
                 # 当前迭代的码率 r_i
                 r_i = bitrates[i]
                 
+                # 用户的信道容量 C_i (kbps)
+                C_i = channel_capacities.get(user.user_id, 2000)
+                
                 # 计算效用函数的梯度: d(u_i)/d(r_i) = P_i / r_i
                 if r_i > 0:
                     du_dr = P_i / r_i
@@ -182,9 +224,12 @@ class Allocator:
                 else:
                     df_dr = 0
                 
-                # 梯度上升更新: r_i += learning_rate * (du/dr - alpha * df/dr - lambda * resource_cost)
-                # resource_cost = 物理层资源消耗的近似梯度（简化为常数1）
-                gradient = du_dr - self.alpha * df_dr - lambda_param
+                # 计算资源成本梯度: d(c_i)/d(r_i) ≈ 1 / C_i
+                # 论文公式: c_i = ceil(r_i / C_i)，近似为连续时 dc_i/dr_i = 1/C_i
+                dc_dr = 1.0 / C_i if C_i > 0 else 1.0
+                
+                # 梯度上升更新: r_i += learning_rate * (du/dr - alpha * df/dr - lambda * dc/dr)
+                gradient = du_dr - self.alpha * df_dr - lambda_param * dc_dr
                 bitrates[i] += learning_rate * gradient
                 
                 # 限制码率范围
@@ -200,33 +245,121 @@ class Allocator:
             lambda_param += 0.01 * resource_deficit
             lambda_param = max(lambda_param, 0.001)
         
-        # 转换回离散码率并分配资源
-        allocation_result = AllocationResult()
-        total_resources = 0
+        # 量化到离散码率（论文方法：向下取整 + 贪心升级）
+        allocation_result = self._quantize_and_upgrade(
+            users, bitrates, channel_capacities
+        )
         
+        allocation_result.total_resources_used = sum(allocation_result.user_allocations.values())
+        return allocation_result
+    
+    def _quantize_and_upgrade(self, users: List[User], 
+                             continuous_bitrates: np.ndarray,
+                             channel_capacities: Dict[int, float]) -> AllocationResult:
+        """
+        量化连续码率到离散值（论文方法：向下取整 + 贪心升级）
+        
+        步骤:
+        1. 所有用户向下取整到最近的离散码率
+        2. 计算剩余资源
+        3. 贪心地为某些用户升级到下一档码率（选择性价比最高的）
+        
+        Args:
+            users: 用户列表
+            continuous_bitrates: 连续优化得到的码率 [n_users]
+            channel_capacities: 信道容量字典
+        
+        Returns:
+            离散化后的分配结果
+        """
+        allocation_result = AllocationResult()
+        n_users = len(users)
+        
+        # 步骤1: 向下取整
+        floor_indices = []
         for i, user in enumerate(users):
-            # 找最接近的离散码率
-            closest_bitrate_idx = np.argmin(np.abs(np.array(BITRATE_LEVELS) - bitrates[i]))
-            closest_bitrate = BITRATE_LEVELS[closest_bitrate_idx]
+            r_i = continuous_bitrates[i]
             
+            # 找到不超过r_i的最大离散码率索引
+            floor_idx = 0
+            for j, bitrate in enumerate(BITRATE_LEVELS):
+                if bitrate <= r_i:
+                    floor_idx = j
+                else:
+                    break
+            
+            floor_indices.append(floor_idx)
+            
+            # 分配向下取整的码率
+            floor_bitrate = BITRATE_LEVELS[floor_idx]
             resources_needed = self._compute_resources_for_bitrate(
-                closest_bitrate, channel_capacities.get(user.user_id, 2000)
+                floor_bitrate, channel_capacities.get(user.user_id, 2000)
             )
             
-            if total_resources + resources_needed <= self.total_resources:
-                allocation_result.user_allocations[user.user_id] = resources_needed
-                allocation_result.user_bitrates[user.user_id] = closest_bitrate
-                total_resources += resources_needed
+            allocation_result.user_bitrates[user.user_id] = floor_bitrate
+            allocation_result.user_allocations[user.user_id] = resources_needed
+        
+        # 步骤2: 计算剩余资源
+        used_resources = sum(allocation_result.user_allocations.values())
+        remaining_resources = self.total_resources - used_resources
+        
+        # 步骤3: 贪心升级（选择性价比最高的用户）
+        # 性价比 = (升级后效用增益) / (额外资源消耗)
+        upgrade_candidates = []
+        
+        for i, user in enumerate(users):
+            floor_idx = floor_indices[i]
+            
+            # 检查是否可以升级
+            if floor_idx + 1 < len(BITRATE_LEVELS):
+                current_bitrate = BITRATE_LEVELS[floor_idx]
+                next_bitrate = BITRATE_LEVELS[floor_idx + 1]
                 
-                # 计算目标函数值
+                # 计算效用增益
                 P_i = 1.0
                 S_i = user.get_bitrate_switches(window_size=BITRATE_SWITCH_WINDOW)
-                u_i = P_i * np.log(closest_bitrate) if closest_bitrate > 0 else 0
                 r_i_star = float(user.current_bitrate)
-                f_i = (np.sqrt((closest_bitrate - r_i_star)**2) + 1) * S_i
-                allocation_result.objective_value += (u_i - self.alpha * f_i)
+                
+                u_current = P_i * np.log(current_bitrate) if current_bitrate > 0 else 0
+                f_current = (np.sqrt((current_bitrate - r_i_star)**2) + 1) * S_i
+                
+                u_next = P_i * np.log(next_bitrate)
+                f_next = (np.sqrt((next_bitrate - r_i_star)**2) + 1) * S_i
+                
+                utility_gain = (u_next - self.alpha * f_next) - (u_current - self.alpha * f_current)
+                
+                # 计算资源增量
+                C_i = channel_capacities.get(user.user_id, 2000)
+                resources_current = self._compute_resources_for_bitrate(current_bitrate, C_i)
+                resources_next = self._compute_resources_for_bitrate(next_bitrate, C_i)
+                resource_cost = resources_next - resources_current
+                
+                if resource_cost > 0 and utility_gain > 0:
+                    cost_efficiency = utility_gain / resource_cost
+                    upgrade_candidates.append({
+                        'user_id': user.user_id,
+                        'user_idx': i,
+                        'next_bitrate': next_bitrate,
+                        'resource_cost': resource_cost,
+                        'utility_gain': utility_gain,
+                        'cost_efficiency': cost_efficiency
+                    })
         
-        allocation_result.total_resources_used = total_resources
+        # 按性价比排序，贪心升级
+        upgrade_candidates.sort(key=lambda x: x['cost_efficiency'], reverse=True)
+        
+        for candidate in upgrade_candidates:
+            if candidate['resource_cost'] <= remaining_resources:
+                user_id = candidate['user_id']
+                
+                # 执行升级
+                old_resources = allocation_result.user_allocations[user_id]
+                allocation_result.user_bitrates[user_id] = candidate['next_bitrate']
+                allocation_result.user_allocations[user_id] += candidate['resource_cost']
+                
+                remaining_resources -= candidate['resource_cost']
+                allocation_result.objective_value += candidate['utility_gain']
+        
         return allocation_result
     
     def _compute_resource_requirements(self, users: List[User], 
