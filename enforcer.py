@@ -12,7 +12,7 @@ AVIS Enforcer - 资源执行和流量整形模块
 import numpy as np
 from typing import Dict, List
 from models import User
-from config import CHUNK_DURATION, BITRATE_LEVELS
+from config import BITRATE_LEVELS
 
 
 class Enforcer:

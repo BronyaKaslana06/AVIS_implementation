@@ -93,7 +93,8 @@ class PerformanceMetrics:
         """
         计算资源利用率
         
-        利用率 = 平均分配的资源块数 / 总资源块数
+        公式: U = (1/T) * sum_t (sum_i r_i(t)) / R_total
+        即: 每个时刻所有用户占用资源之和，再对时间取平均，最后除以总资源
         
         Args:
             allocated_resources: user_id -> [分配资源序列]
@@ -105,16 +106,31 @@ class PerformanceMetrics:
         if not allocated_resources:
             return 0
         
-        all_allocations = []
+        # 获取仿真时长（假设所有用户的历史长度相同）
+        num_timesteps = 0
         for resources_list in allocated_resources.values():
             if resources_list:
-                all_allocations.extend(resources_list)
-        
-        if not all_allocations:
+                num_timesteps = len(resources_list)
+                break
+            
+        if num_timesteps == 0:
             return 0
         
-        avg_allocation = np.mean(all_allocations)
-        utilization = avg_allocation / total_resources
+        # 计算每个时刻的总资源占用
+        timestep_totals = []
+        for t in range(num_timesteps):
+            # 在时刻t，所有用户占用的资源总和
+            total_at_t = 0
+            for user_id, resources_list in allocated_resources.items():
+                if t < len(resources_list):
+                    total_at_t += resources_list[t]
+            timestep_totals.append(total_at_t)
+        
+        # 对时间取平均，得到平均每个时刻占用的资源
+        avg_resources_used = np.mean(timestep_totals)
+        
+        # 除以总资源块数
+        utilization = avg_resources_used / total_resources
         
         return float(np.clip(utilization, 0, 1))
     

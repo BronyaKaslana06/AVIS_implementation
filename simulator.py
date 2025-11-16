@@ -9,7 +9,7 @@ from allocator import Allocator
 from enforcer import Enforcer
 from config import (
     NUM_USERS, TOTAL_RESOURCE_BLOCKS, SIMULATION_TIME, ALLOCATION_INTERVAL,
-    CHUNK_DURATION, CHANNEL_MODELS, BITRATE_LEVELS, FAIRNESS_WINDOW
+    CHANNEL_MODELS, BITRATE_LEVELS
 )
 
 
