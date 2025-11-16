@@ -233,3 +233,88 @@ def create_summary_report(all_results: List[Dict], output_dir: str = 'results'):
     
     plt.savefig(f'{output_dir}/summary_report.png', dpi=150)
     plt.close()
+
+
+def plot_resource_utilization_comparison(discrete_results_by_alpha: Dict, 
+                                         continuous_results_by_alpha: Dict,
+                                         no_avis_results: Dict,
+                                         alpha_values: List[float],
+                                         output_dir: str = 'results'):
+    """
+    绘制资源利用率对比图（柱状图）
+    
+    Args:
+        discrete_results_by_alpha: 离散型AVIS各alpha值的结果字典
+        continuous_results_by_alpha: 连续型AVIS各alpha值的结果字典
+        no_avis_results: NO-AVIS的结果
+        alpha_values: alpha参数列表
+        output_dir: 输出目录
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    from metrics import PerformanceMetrics
+    
+    # 准备数据
+    no_avis_util = PerformanceMetrics.calculate_resource_utilization(
+        no_avis_results['history']['allocated_resources']
+    )
+    
+    discrete_utils = []
+    continuous_utils = []
+    
+    for alpha in alpha_values:
+        discrete_util = PerformanceMetrics.calculate_resource_utilization(
+            discrete_results_by_alpha[alpha]['history']['allocated_resources']
+        )
+        continuous_util = PerformanceMetrics.calculate_resource_utilization(
+            continuous_results_by_alpha[alpha]['history']['allocated_resources']
+        )
+        
+        discrete_utils.append(discrete_util)
+        continuous_utils.append(continuous_util)
+    
+    # 绘制柱状图
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    x = np.arange(len(alpha_values))
+    width = 0.25
+    
+    # 三组柱子
+    bars1 = ax.bar(x - width, [no_avis_util] * len(alpha_values), width, 
+                   label='NO-AVIS', color='lightcoral', alpha=0.8)
+    bars2 = ax.bar(x, discrete_utils, width, 
+                   label='Discrete AVIS', color='skyblue', alpha=0.8)
+    bars3 = ax.bar(x + width, continuous_utils, width, 
+                   label='Continuous AVIS', color='lightgreen', alpha=0.8)
+    
+    # 添加数值标签
+    def add_value_labels(bars):
+        for bar in bars:
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'{height*100:.1f}%',
+                   ha='center', va='bottom', fontsize=9)
+    
+    add_value_labels(bars1)
+    add_value_labels(bars2)
+    add_value_labels(bars3)
+    
+    # 设置图表属性
+    ax.set_xlabel('Alpha (α)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Resource Utilization (%)', fontsize=12, fontweight='bold')
+    ax.set_title('Resource Utilization Comparison: NO-AVIS vs Discrete AVIS vs Continuous AVIS', 
+                fontsize=13, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'{alpha:.1f}' for alpha in alpha_values])
+    ax.legend(fontsize=11, loc='upper right')
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_ylim([0, max(max(discrete_utils), max(continuous_utils), no_avis_util) * 1.15])
+    
+    # 转换y轴为百分比显示
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y*100:.0f}%'))
+    
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}/resource_utilization_comparison.png', dpi=150)
+    plt.close()
+    
+    print(f"  ✓ 资源利用率对比图: resource_utilization_comparison.png")

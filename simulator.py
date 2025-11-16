@@ -99,16 +99,18 @@ class NetworkSimulator:
 class SimulationEngine:
     """AVIS仿真引擎"""
     
-    def __init__(self, use_avis: bool = True, alpha: float = 0.5):
+    def __init__(self, use_avis: bool = True, alpha: float = 0.5, optimization_type: str = 'continuous'):
         """
         初始化仿真引擎
         
         Args:
             use_avis: 是否使用AVIS调度器（True）或无调度（False）
             alpha: AVIS的惩罚函数参数
+            optimization_type: 优化方法类型 ('discrete' 或 'continuous')
         """
         self.use_avis = use_avis
         self.alpha = alpha
+        self.optimization_type = optimization_type
         self.simulator = NetworkSimulator()
         
         # 如果使用AVIS，初始化Allocator和Enforcer
@@ -117,7 +119,8 @@ class SimulationEngine:
             self.enforcer = Enforcer(allocation_interval=ALLOCATION_INTERVAL)
             self.enforcer.init_for_users(self.simulator.users)
         else:
-            self.allocator = None
+            # NO-AVIS也需要allocator来计算资源（用于对比）
+            self.allocator = Allocator(alpha=0)
             self.enforcer = None
         
         # 历史记录
@@ -171,11 +174,17 @@ class SimulationEngine:
     
     def _run_avis_scheduling(self):
         """运行AVIS调度"""
-        # Allocator阶段：计算最优码率分配
-        allocation_result = self.allocator.discrete_optimization(
-            self.simulator.users,
-            self.simulator.channel_capacities
-        )
+        # Allocator阶段：根据优化类型选择方法
+        if self.optimization_type == 'discrete':
+            allocation_result = self.allocator.discrete_optimization(
+                self.simulator.users,
+                self.simulator.channel_capacities
+            )
+        else:  # continuous
+            allocation_result = self.allocator.continuous_optimization(
+                self.simulator.users,
+                self.simulator.channel_capacities
+            )
         
         # 更新用户推荐码率
         for user in self.simulator.users:
@@ -228,8 +237,10 @@ class SimulationEngine:
                 self.stats['total_bitrate_switches'][user.user_id] += 1
             
             user.bitrate_history.append(user.current_bitrate)
-            # NO-AVIS不记录分配资源
-            user.allocated_resources.append(0)
+            # NO-AVIS也计算资源消耗（用于对比）
+            capacity = self.simulator.get_user_throughput(user.user_id)
+            resources = self.allocator._compute_resources_for_bitrate(user.current_bitrate, capacity)
+            user.allocated_resources.append(resources)
     
     def _record_history(self):
         """记录当前仿真状态"""

@@ -22,27 +22,35 @@ from metrics import PerformanceMetrics, print_performance_summary
 from visualization import (
     plot_bitrate_comparison, plot_fairness_over_time, 
     plot_bitrate_switches, plot_metrics_comparison_bar,
-    create_summary_report
+    create_summary_report, plot_resource_utilization_comparison
 )
 from config import ALPHA_VALUES, SIMULATION_TIME
 
 
-def run_single_simulation(use_avis: bool, alpha: float = None) -> Dict:
+def run_single_simulation(use_avis: bool, alpha: float = None, optimization_type: str = 'continuous') -> Dict:
     """
     运行单次仿真
     
     Args:
         use_avis: 是否使用AVIS
         alpha: 如果使用AVIS，则为惩罚函数参数
+        optimization_type: 优化方法类型 ('discrete' 或 'continuous')
     
     Returns:
         仿真结果字典
     """
-    mode_str = f"AVIS (α={alpha})" if use_avis else "NO-AVIS"
+    if use_avis:
+        mode_str = f"AVIS-{optimization_type.upper()} (α={alpha})"
+    else:
+        mode_str = "NO-AVIS"
     print(f"\n启动仿真: {mode_str}")
     print(f"  仿真时长: {SIMULATION_TIME}秒")
     
-    engine = SimulationEngine(use_avis=use_avis, alpha=alpha if use_avis else 0)
+    engine = SimulationEngine(
+        use_avis=use_avis, 
+        alpha=alpha if use_avis else 0,
+        optimization_type=optimization_type
+    )
     results = engine.run_simulation(duration=SIMULATION_TIME)
     
     print(f"  仿真完成!")
@@ -55,36 +63,48 @@ def main():
     print("\n" + "="*80)
     print("AVIS自适应视频流调度算法仿真")
     print("="*80)
-    print("\n论文: A Scheduling Framework for Adaptive Video Delivery over Cellular Networks")
-    print("作者: Jiasi Chen, Rajesh Mahindra, Mohammad A. Khojastepour, Sampath Rangarajan, Mung Chiang")
+    # print("\n论文: A Scheduling Framework for Adaptive Video Delivery over Cellular Networks")
+    # print("作者: Jiasi Chen, Rajesh Mahindra, Mohammad A. Khojastepour, Sampath Rangarajan, Mung Chiang")
     
     # 创建输出目录
-    output_dir = 'results'
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir_discrete = 'results_discrete'
+    output_dir_continuous = 'results_continuous'
+    os.makedirs(output_dir_discrete, exist_ok=True)
+    os.makedirs(output_dir_continuous, exist_ok=True)
     
     # =========================================================================
-    # 第一阶段: 对于每个alpha值，对比AVIS与NO-AVIS
+    # 对比实验: 离散型AVIS vs 连续型AVIS vs NO-AVIS
     # =========================================================================
     print("\n" + "="*80)
-    print("第一阶段: 不同α参数下的对比实验")
+    print("对比实验: 离散型 vs 连续型 vs NO-AVIS")
     print("="*80)
     
-    avis_results_by_alpha = {}
-    no_avis_results = None  # NO-AVIS只需运行一次
+    # 运行NO-AVIS（只需一次）
+    print("\n【基线方案】")
+    no_avis_results = run_single_simulation(use_avis=False)
+    
+    # 针对每个alpha值，分别运行离散型和连续型
+    discrete_results_by_alpha = {}
+    continuous_results_by_alpha = {}
     
     for alpha in ALPHA_VALUES:
         print(f"\n【测试参数集 α={alpha}】")
         
-        # 运行AVIS
-        avis_results = run_single_simulation(use_avis=True, alpha=alpha)
-        avis_results_by_alpha[alpha] = avis_results
+        # 运行离散型AVIS
+        discrete_results = run_single_simulation(use_avis=True, alpha=alpha, optimization_type='discrete')
+        discrete_results_by_alpha[alpha] = discrete_results
         
-        # 第一次运行时，也运行NO-AVIS基线
-        if no_avis_results is None:
-            no_avis_results = run_single_simulation(use_avis=False, alpha=None)
+        # 运行连续型AVIS
+        continuous_results = run_single_simulation(use_avis=True, alpha=alpha, optimization_type='continuous')
+        continuous_results_by_alpha[alpha] = continuous_results
         
         # 打印对比
-        print_performance_summary(avis_results, no_avis_results, alpha)
+        print("\n  【离散型AVIS vs NO-AVIS】")
+        print_performance_summary(discrete_results, no_avis_results, alpha)
+        
+        print("\n  【连续型AVIS vs NO-AVIS】")
+        print_performance_summary(continuous_results, no_avis_results, alpha)
+    
     
     # =========================================================================
     # 第二阶段: 生成可视化结果
@@ -93,34 +113,72 @@ def main():
     print("第二阶段: 生成可视化结果")
     print("="*80)
     
+    # 为离散型生成图表
+    print("\n【离散型AVIS图表】")
     for alpha in ALPHA_VALUES:
         print(f"\n生成 α={alpha} 的图表...")
+        discrete_results = discrete_results_by_alpha[alpha]
         
-        avis_results = avis_results_by_alpha[alpha]
-        
-        # 生成对比图
-        plot_bitrate_comparison(avis_results, no_avis_results, alpha, output_dir)
+        plot_bitrate_comparison(discrete_results, no_avis_results, alpha, output_dir_discrete)
         print(f"  ✓ 码率对比图: bitrate_comparison_alpha_{alpha}.png")
         
-        # 生成公平性随时间变化图
-        plot_fairness_over_time(avis_results, no_avis_results, alpha, output_dir)
+        plot_fairness_over_time(discrete_results, no_avis_results, alpha, output_dir_discrete)
         print(f"  ✓ 公平性时间序列: fairness_over_time_alpha_{alpha}.png")
         
-        # 生成码率切换对比图
-        plot_bitrate_switches(avis_results, no_avis_results, alpha, output_dir)
+        plot_bitrate_switches(discrete_results, no_avis_results, alpha, output_dir_discrete)
         print(f"  ✓ 码率切换对比: bitrate_switches_alpha_{alpha}.png")
     
-    # 生成α参数影响分析图
-    all_avis_results = [avis_results_by_alpha[alpha] for alpha in ALPHA_VALUES]
-    for result, alpha in zip(all_avis_results, ALPHA_VALUES):
+    all_discrete_results = [discrete_results_by_alpha[alpha] for alpha in ALPHA_VALUES]
+    for result, alpha in zip(all_discrete_results, ALPHA_VALUES):
         result['alpha'] = alpha
     
-    plot_metrics_comparison_bar(all_avis_results, output_dir)
+    plot_metrics_comparison_bar(all_discrete_results, output_dir_discrete)
     print(f"\n  ✓ α参数影响分析: metrics_vs_alpha.png")
     
-    # 生成汇总报告
-    create_summary_report(all_avis_results, output_dir)
+    create_summary_report(all_discrete_results, output_dir_discrete)
     print(f"  ✓ 汇总报告: summary_report.png")
+    
+    # 为连续型生成图表
+    print("\n【连续型AVIS图表】")
+    for alpha in ALPHA_VALUES:
+        print(f"\n生成 α={alpha} 的图表...")
+        continuous_results = continuous_results_by_alpha[alpha]
+        
+        plot_bitrate_comparison(continuous_results, no_avis_results, alpha, output_dir_continuous)
+        print(f"  ✓ 码率对比图: bitrate_comparison_alpha_{alpha}.png")
+        
+        plot_fairness_over_time(continuous_results, no_avis_results, alpha, output_dir_continuous)
+        print(f"  ✓ 公平性时间序列: fairness_over_time_alpha_{alpha}.png")
+        
+        plot_bitrate_switches(continuous_results, no_avis_results, alpha, output_dir_continuous)
+        print(f"  ✓ 码率切换对比: bitrate_switches_alpha_{alpha}.png")
+    
+    all_continuous_results = [continuous_results_by_alpha[alpha] for alpha in ALPHA_VALUES]
+    for result, alpha in zip(all_continuous_results, ALPHA_VALUES):
+        result['alpha'] = alpha
+    
+    plot_metrics_comparison_bar(all_continuous_results, output_dir_continuous)
+    print(f"\n  ✓ α参数影响分析: metrics_vs_alpha.png")
+    
+    create_summary_report(all_continuous_results, output_dir_continuous)
+    print(f"  ✓ 汇总报告: summary_report.png")
+    
+    # 生成资源利用率对比图（同时保存在两个目录）
+    print("\n【资源利用率对比图】")
+    plot_resource_utilization_comparison(
+        discrete_results_by_alpha,
+        continuous_results_by_alpha,
+        no_avis_results,
+        ALPHA_VALUES,
+        output_dir_discrete
+    )
+    plot_resource_utilization_comparison(
+        discrete_results_by_alpha,
+        continuous_results_by_alpha,
+        no_avis_results,
+        ALPHA_VALUES,
+        output_dir_continuous
+    )
     
     # =========================================================================
     # 第三阶段: 统计汇总
@@ -129,72 +187,130 @@ def main():
     print("第三阶段: 实验统计汇总")
     print("="*80)
     
-    print("\n【ALPHA参数对AVIS性能的影响】")
+    print("\n【离散型AVIS - ALPHA参数影响】")
+    print("-" * 80)
+    print(f"{'α值':<10} {'公平性':<12} {'码率切换':<15} {'平均码率':<15}")
+    print("-" * 80)
+    
+    for alpha in ALPHA_VALUES:
+        discrete_results = discrete_results_by_alpha[alpha]
+        bitrates = discrete_results['history']['bitrates']
+        
+        jain = PerformanceMetrics.calculate_jain_fairness_index(bitrates)
+        switches = sum(PerformanceMetrics.calculate_bitrate_switch_frequency(bitrates).values())
+        avg_br = np.mean(list(PerformanceMetrics.calculate_avg_bitrate(bitrates).values()))
+        # stability = np.mean(list(PerformanceMetrics.calculate_bitrate_stability(bitrates).values()))
+        
+        print(f"{alpha:<10.1f} {jain:<12.4f} {switches:<15d} {avg_br:<15.0f}")
+    
+    print("\n【连续型AVIS - ALPHA参数影响】")
     print("-" * 80)
     print(f"{'α值':<10} {'公平性':<12} {'码率切换':<15} {'平均码率':<15} {'稳定性':<12}")
     print("-" * 80)
     
     for alpha in ALPHA_VALUES:
-        avis_results = avis_results_by_alpha[alpha]
-        bitrates = avis_results['history']['bitrates']
+        continuous_results = continuous_results_by_alpha[alpha]
+        bitrates = continuous_results['history']['bitrates']
         
         jain = PerformanceMetrics.calculate_jain_fairness_index(bitrates)
         switches = sum(PerformanceMetrics.calculate_bitrate_switch_frequency(bitrates).values())
         avg_br = np.mean(list(PerformanceMetrics.calculate_avg_bitrate(bitrates).values()))
-        stability = np.mean(list(PerformanceMetrics.calculate_bitrate_stability(bitrates).values()))
+        # stability = np.mean(list(PerformanceMetrics.calculate_bitrate_stability(bitrates).values()))
         
-        print(f"{alpha:<10.1f} {jain:<12.4f} {switches:<15d} {avg_br:<15.0f} {stability:<12.0f}")
+        print(f"{alpha:<10.1f} {jain:<12.4f} {switches:<15d} {avg_br:<15.0f}")
     
     # =========================================================================
     # 最终总结
     # =========================================================================
     print("\n" + "="*80)
-    print("仿真完成! 所有结果已保存到 results/ 目录")
+    print("仿真完成!")
     print("="*80)
+    print(f"  离散型结果: results_discrete/")
+    print(f"  连续型结果: results_continuous/")
     
     print("\n【关键发现】")
     print("-" * 80)
     
-    # 找到最优的alpha值（基于公平性和切换频率的权衡）
-    best_alpha = ALPHA_VALUES[0]
-    best_score = float('inf')
+    # 对比连续型最优配置
+    best_alpha_cont = ALPHA_VALUES[0]
+    best_score_cont = float('inf')
     
     for alpha in ALPHA_VALUES:
-        avis_results = avis_results_by_alpha[alpha]
-        bitrates = avis_results['history']['bitrates']
+        continuous_results = continuous_results_by_alpha[alpha]
+        bitrates = continuous_results['history']['bitrates']
         
         jain = PerformanceMetrics.calculate_jain_fairness_index(bitrates)
         switches = sum(PerformanceMetrics.calculate_bitrate_switch_frequency(bitrates).values())
         
-        # 综合评分：最大化公平性，最小化切换（切换数权重更大）
         score = -jain + switches / 10
         
-        if score < best_score:
-            best_score = score
-            best_alpha = alpha
+        if score < best_score_cont:
+            best_score_cont = score
+            best_alpha_cont = alpha
     
-    best_avis = avis_results_by_alpha[best_alpha]
-    best_bitrates = best_avis['history']['bitrates']
-    best_jain = PerformanceMetrics.calculate_jain_fairness_index(best_bitrates)
+    best_continuous = continuous_results_by_alpha[best_alpha_cont]
+    best_cont_bitrates = best_continuous['history']['bitrates']
+    best_cont_jain = PerformanceMetrics.calculate_jain_fairness_index(best_cont_bitrates)
+    
+    # 对比离散型最优配置
+    best_alpha_disc = ALPHA_VALUES[0]
+    best_score_disc = float('inf')
+    
+    for alpha in ALPHA_VALUES:
+        discrete_results = discrete_results_by_alpha[alpha]
+        bitrates = discrete_results['history']['bitrates']
+        
+        jain = PerformanceMetrics.calculate_jain_fairness_index(bitrates)
+        switches = sum(PerformanceMetrics.calculate_bitrate_switch_frequency(bitrates).values())
+        
+        score = -jain + switches / 10
+        
+        if score < best_score_disc:
+            best_score_disc = score
+            best_alpha_disc = alpha
+    
+    best_discrete = discrete_results_by_alpha[best_alpha_disc]
+    best_disc_bitrates = best_discrete['history']['bitrates']
+    best_disc_jain = PerformanceMetrics.calculate_jain_fairness_index(best_disc_bitrates)
     
     no_avis_bitrates = no_avis_results['history']['bitrates']
     no_avis_jain = PerformanceMetrics.calculate_jain_fairness_index(no_avis_bitrates)
     
-    print(f"\n1. 最优参数: α={best_alpha}")
-    print(f"   - 实现公平性提升: {(best_jain - no_avis_jain)*100:+.1f}%")
-    print(f"   - 达到公平性指数: {best_jain:.4f}")
+    print(f"\n1. 连续型AVIS最优参数: α={best_alpha_cont}")
+    print(f"   - 公平性提升: {(best_cont_jain - no_avis_jain)*100:+.1f}%")
+    print(f"   - 公平性指数: {best_cont_jain:.4f}")
     
-    best_switches = sum(PerformanceMetrics.calculate_bitrate_switch_frequency(best_bitrates).values())
+    print(f"\n2. 离散型AVIS最优参数: α={best_alpha_disc}")
+    print(f"   - 公平性提升: {(best_disc_jain - no_avis_jain)*100:+.1f}%")
+    print(f"   - 公平性指数: {best_disc_jain:.4f}")
+    
+    best_cont_switches = sum(PerformanceMetrics.calculate_bitrate_switch_frequency(best_cont_bitrates).values())
+    best_disc_switches = sum(PerformanceMetrics.calculate_bitrate_switch_frequency(best_disc_bitrates).values())
     no_avis_switches = sum(PerformanceMetrics.calculate_bitrate_switch_frequency(no_avis_bitrates).values())
-    print(f"\n2. 码率稳定性改进: {no_avis_switches - best_switches} 次切换减少 ({(1-best_switches/max(no_avis_switches,1))*100:.1f}%)")
     
-    best_avg_br = np.mean(list(PerformanceMetrics.calculate_avg_bitrate(best_bitrates).values()))
+    print(f"\n3. 码率切换对比:")
+    print(f"   - NO-AVIS: {no_avis_switches} 次")
+    print(f"   - 连续型AVIS: {best_cont_switches} 次 ({(1-best_cont_switches/max(no_avis_switches,1))*100:+.1f}%)")
+    print(f"   - 离散型AVIS: {best_disc_switches} 次 ({(1-best_disc_switches/max(no_avis_switches,1))*100:+.1f}%)")
+    
+    best_cont_avg_br = np.mean(list(PerformanceMetrics.calculate_avg_bitrate(best_cont_bitrates).values()))
+    best_disc_avg_br = np.mean(list(PerformanceMetrics.calculate_avg_bitrate(best_disc_bitrates).values()))
     no_avis_avg_br = np.mean(list(PerformanceMetrics.calculate_avg_bitrate(no_avis_bitrates).values()))
-    print(f"\n3. 吞吐量: AVIS={best_avg_br:.0f}kbps, NO-AVIS={no_avis_avg_br:.0f}kbps")
+    
+    print(f"\n4. 吞吐量对比:")
+    print(f"   - NO-AVIS: {no_avis_avg_br:.0f}kbps")
+    print(f"   - 连续型AVIS: {best_cont_avg_br:.0f}kbps")
+    print(f"   - 离散型AVIS: {best_disc_avg_br:.0f}kbps")
     
     print("\n【生成的文件】")
     print("-" * 80)
-    for file in sorted(os.listdir(output_dir)):
+    print(f"离散型结果目录 (results_discrete/):")
+    for file in sorted(os.listdir(output_dir_discrete)):
+        if file.endswith('.png'):
+            print(f"  ✓ {file}")
+    
+    print(f"\n连续型结果目录 (results_continuous/):")
+    for file in sorted(os.listdir(output_dir_continuous)):
         if file.endswith('.png'):
             print(f"  ✓ {file}")
 
