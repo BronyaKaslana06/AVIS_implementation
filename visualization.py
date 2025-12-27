@@ -14,15 +14,29 @@ def plot_bitrate_comparison(results_avis: Dict, results_no_avis: Dict,
     """绘制码率对比图"""
     os.makedirs(output_dir, exist_ok=True)
     
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle(f'AVIS vs NO-AVIS Bitrate Comparison (α={alpha})', fontsize=14, fontweight='bold')
-    
     avis_bitrates = results_avis['history']['bitrates']
     no_avis_bitrates = results_no_avis['history']['bitrates']
     time = results_avis['history']['time']
     
+    num_users = len(avis_bitrates)
+    # 动态计算行列数：每行最多4个子图
+    ncols = min(4, num_users)
+    nrows = (num_users + ncols - 1) // ncols
+    
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows))
+    fig.suptitle(f'AVIS vs NO-AVIS Bitrate Comparison (α={alpha})', fontsize=14, fontweight='bold')
+    
+    # 确保 axes 是二维数组
+    if num_users == 1:
+        axes = np.array([[axes]])
+    elif nrows == 1:
+        axes = axes.reshape(1, -1)
+    elif ncols == 1:
+        axes = axes.reshape(-1, 1)
+    
     for idx, (user_id, avis_br) in enumerate(avis_bitrates.items()):
-        ax = axes[idx // 2, idx % 2]
+        row, col = idx // ncols, idx % ncols
+        ax = axes[row, col]
         
         no_avis_br = no_avis_bitrates.get(user_id, [])
         
@@ -32,8 +46,13 @@ def plot_bitrate_comparison(results_avis: Dict, results_no_avis: Dict,
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Bitrate (kbps)')
         ax.set_title(f'User {user_id}')
-        ax.legend()
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
+    
+    # 隐藏多余的子图
+    for idx in range(num_users, nrows * ncols):
+        row, col = idx // ncols, idx % ncols
+        axes[row, col].set_visible(False)
     
     plt.tight_layout()
     plt.savefig(f'{output_dir}/bitrate_comparison_alpha_{alpha}.png', dpi=150)

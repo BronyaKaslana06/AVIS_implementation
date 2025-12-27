@@ -335,7 +335,7 @@ class Allocator:
                 resource_cost = resources_next - resources_current
                 
                 if resource_cost > 0 and utility_gain > 0:
-                    cost_efficiency = utility_gain / resource_cost
+                    cost_efficiency = utility_gain / resource_cost # 性价比=增益/资源块成本
                     upgrade_candidates.append({
                         'user_id': user.user_id,
                         'user_idx': i,

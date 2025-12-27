@@ -44,10 +44,11 @@ class Enforcer:
             # 计算MaxRate（论文公式13）
             max_rate = self._compute_max_rate(user.current_bitrate)
             
-            # 初始化token bucket：容量设置为2倍块大小，以吸收短期突发
+            # 初始化token bucket：容量设置为4秒的数据量
+            # 注意：capacity单位需要是bits，与tokens单位一致
             self.token_buckets[user.user_id] = TokenBucket(
-                rate=max_rate,  # 使用MaxRate而非分配码率
-                capacity=max_rate * 4  # 容量为4秒的数据
+                rate=max_rate,  # 使用MaxRate而非分配码率 (kbps)
+                capacity=max_rate * 4 * 1000  # 4秒的数据量 (bits)
             )
             self.per_flow_queues[user.user_id] = 0
             self.min_rates[user.user_id] = user.current_bitrate  # MinRate = r_ij
@@ -100,8 +101,88 @@ class Enforcer:
                 max_rate = self._compute_max_rate(bitrate)
                 self.max_rates[user_id] = max_rate
                 
-                # 更新Token Bucket的速率为MaxRate
-                self.token_buckets[user_id].update_rate(max_rate)
+                # 更新Token Bucket的速率和容量
+                bucket = self.token_buckets[user_id]
+                bucket.rate = max_rate
+                bucket.capacity = max_rate * 4 * 1000  # 4秒的数据量 (bits)
+                
+                # 确保tokens不超过新容量，但也给予足够的初始预算
+                # 这模拟了"新分配周期开始时有足够的传输预算"
+                if bucket.tokens < bucket.capacity * 0.5:
+                    bucket.tokens = bucket.capacity * 0.5
+    
+    def enforce_bitrate(self, user_id: int, requested_bitrate: int, 
+                       delta_t: float) -> tuple:
+        """
+        使用Token Bucket对请求的码率进行流量整形
+        
+        这是Enforcer的核心功能：确保用户不能超过MaxRate限制。
+        
+        Args:
+            user_id: 用户ID
+            requested_bitrate: Allocator分配的码率 (kbps)
+            delta_t: 时间间隔 (秒)
+        
+        Returns:
+            (实际允许的码率, 是否被限速): 
+            - 如果tokens充足，返回原码率
+            - 如果tokens不足，返回降级后的码率
+        """
+        if user_id not in self.token_buckets:
+            return requested_bitrate, False
+        
+        bucket = self.token_buckets[user_id]
+        
+        # 1. 时间流逝，添加新的tokens（模拟带宽恢复）
+        bucket.add_tokens(delta_t)
+        
+        # 2. 计算这个周期需要传输的数据量
+        # 单位: kbps * 秒 * 1000 = bits
+        required_bits = requested_bitrate * delta_t * 1000
+        
+        # 3. 检查Token Bucket是否有足够的tokens
+        if bucket.tokens >= required_bits:
+            # tokens充足，允许全速传输
+            bucket.tokens -= required_bits
+            return requested_bitrate, False
+        else:
+            # tokens不足，需要限速
+            # 计算当前tokens能支持的最大码率
+            available_bits = bucket.tokens
+            max_supported_kbps = available_bits / (delta_t * 1000)
+            
+            # 消耗所有可用tokens
+            bucket.tokens = 0
+            
+            # 找到不超过可支持速率的最高标准码率档位
+            suitable_bitrates = [br for br in BITRATE_LEVELS 
+                               if br <= max_supported_kbps]
+            
+            if suitable_bitrates:
+                enforced_bitrate = max(suitable_bitrates)
+            else:
+                # tokens严重不足，只能选最低档
+                enforced_bitrate = BITRATE_LEVELS[0]
+            
+            return enforced_bitrate, True
+    
+    def get_token_status(self, user_id: int) -> Dict:
+        """
+        获取用户Token Bucket的状态（用于调试和统计）
+        
+        Returns:
+            包含tokens、rate、capacity的字典
+        """
+        if user_id not in self.token_buckets:
+            return {'tokens': 0, 'rate': 0, 'capacity': 0}
+        
+        bucket = self.token_buckets[user_id]
+        return {
+            'tokens': bucket.tokens,
+            'rate': bucket.rate,
+            'capacity': bucket.capacity,
+            'fill_ratio': bucket.tokens / bucket.capacity if bucket.capacity > 0 else 0
+        }
     
     def schedule_packet(self, user_id: int, packet_size: int, 
                        current_time: float) -> bool:

@@ -4,7 +4,7 @@ AVIS仿真配置文件
 
 # 网络配置
 TOTAL_RESOURCE_BLOCKS = 100  # 基站总资源块数
-NUM_USERS = 4  # DASH用户数量
+NUM_USERS = 8  # DASH用户数量
 SIMULATION_TIME = 300  # 仿真时间（秒）
 ALLOCATION_INTERVAL = 1  # 调度间隔（秒）
 

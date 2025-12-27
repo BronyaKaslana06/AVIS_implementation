@@ -33,7 +33,7 @@ class NetworkSimulator:
         
         # 信道条件 (模拟用户在不同位置)
         self.channel_qualities: Dict[int, str] = {}
-        self.channel_capacities: Dict[int, float] = {}  # kbps
+        self.channel_capacities: Dict[int, float] = {}  # kbps 由simulator维护，表示各个用户当前的信道容量
         
         # 创建用户和信道
         self._init_users()
@@ -123,6 +123,11 @@ class SimulationEngine:
             self.allocator = Allocator(alpha=0)
             self.enforcer = None
         
+        # NO-AVIS: 每个用户的TCP吞吐量估计器（移动平均）
+        # 论文: "keeps track of the moving average of the TCP throughput"
+        self.throughput_estimates = {user.user_id: None for user in self.simulator.users}
+        self.ewma_alpha = 0.3  # 指数加权移动平均的平滑系数
+        
         # 历史记录
         self.history = {
             'time': [],
@@ -193,15 +198,32 @@ class SimulationEngine:
             if user.user_id in allocation_result.user_bitrates:
                 user.current_bitrate = allocation_result.user_bitrates[user.user_id]
             
-            # 统计码率切换
-            if user.current_bitrate != old_bitrate:
-                self.stats['total_bitrate_switches'][user.user_id] += 1
-            
-            # Enforcer阶段：流量整形
+            # Enforcer阶段：Token Bucket流量整形
             if self.enforcer:
+                # 1. 更新MaxRate参数
                 self.enforcer.update_allocation({
                     user.user_id: user.current_bitrate
                 })
+                
+                # 2. 使用Token Bucket进行流量整形
+                # 检查是否有足够的tokens支持当前码率
+                enforced_bitrate, was_throttled = self.enforcer.enforce_bitrate(
+                    user.user_id,
+                    user.current_bitrate,
+                    ALLOCATION_INTERVAL
+                )
+                
+                # 如果被限速，使用Enforcer允许的码率
+                if was_throttled:
+                    user.current_bitrate = enforced_bitrate
+                    # 记录限速事件（可选，用于分析）
+                    if 'throttle_count' not in self.stats:
+                        self.stats['throttle_count'] = {u.user_id: 0 for u in self.simulator.users}
+                    self.stats['throttle_count'][user.user_id] += 1
+            
+            # 统计码率切换
+            if user.current_bitrate != old_bitrate:
+                self.stats['total_bitrate_switches'][user.user_id] += 1
             
             user.bitrate_history.append(user.current_bitrate)
             user.allocated_resources.append(
@@ -209,26 +231,60 @@ class SimulationEngine:
             )
     
     def _run_no_avis_scheduling(self):
-        """无调度的基线方案"""
-        # 简单策略：根据信道容量选择最接近的码率
+        """
+        无调度的基线方案 - 模拟真实DASH客户端行为
+        """
+        # 计算当前时刻的资源竞争情况（模拟块下载重叠）
+        # total_demand是所有用户实际正在请求的数据量，比如用户选择了 4000kbps 的码率档位
+        # channel_capacities是各个用户当前的信道容量，是simulator维护的，是这条链路理论上最大能承载的速率
+        # update_channel_conditions对所有用户的信道容量进行更新，下一秒的容量是在当前容量的基础上加一个随机变化量，而不是重新生成，模拟真实世界中信号强度的连续变化。
+        total_demand = sum(user.current_bitrate for user in self.simulator.users)
+        competition_factor = total_demand / (sum(self.simulator.channel_capacities.values()) + 1e-6)
+        
         for user in self.simulator.users:
             old_bitrate = user.current_bitrate
             
-            # 获取用户的信道容量
-            capacity = self.simulator.get_user_throughput(user.user_id)
+            # 获取真实信道容量
+            true_capacity = self.simulator.get_user_throughput(user.user_id)
             
-            # 选择不超过信道容量的最高码率
-            suitable_bitrates = [br for br in BITRATE_LEVELS if br <= capacity * 0.9]
+            # 模拟TCP吞吐量估计（带噪声和竞争干扰）
+            # 论文: "under-estimation or over-estimation of the underlying bandwidth"
+            
+            # 1. 基础测量值 = 真实容量 + 高斯噪声
+            measurement_noise = np.random.normal(0, true_capacity * 0.15)
+            measured_throughput = true_capacity + measurement_noise
+            
+            # 2. 竞争干扰：当多用户同时下载时，会低估可用带宽
+            if competition_factor > 0.5:
+                # 高竞争时，测量值被压低
+                interference = np.random.uniform(0.7, 0.95)
+                measured_throughput *= interference
+            elif competition_factor < 0.3:
+                # 低竞争时，可能高估带宽
+                overestimate = np.random.uniform(1.0, 1.2)
+                measured_throughput *= overestimate
+            
+            # 3. 更新移动平均估计（EWMA）
+            # 论文: "moving average of the TCP throughput"
+            if self.throughput_estimates[user.user_id] is None:
+                self.throughput_estimates[user.user_id] = measured_throughput
+            else:
+                self.throughput_estimates[user.user_id] = (
+                    self.ewma_alpha * measured_throughput + 
+                    (1 - self.ewma_alpha) * self.throughput_estimates[user.user_id]
+                )
+            
+            estimated_throughput = self.throughput_estimates[user.user_id]
+            
+            # 基于估计吞吐量选择码率
+            # 论文: "requests chunks of the highest rate that can be supported"
+            
+            # 选择不超过估计吞吐量的最高码率（留10%余量）
+            suitable_bitrates = [br for br in BITRATE_LEVELS if br <= estimated_throughput * 0.9]
             if suitable_bitrates:
                 new_bitrate = max(suitable_bitrates)
             else:
                 new_bitrate = BITRATE_LEVELS[0]
-            
-            # 为了增加一些波动（模拟TCP估计误差），有概率选择低码率
-            if np.random.random() < 0.1:
-                current_idx = BITRATE_LEVELS.index(new_bitrate) if new_bitrate in BITRATE_LEVELS else 0
-                if current_idx > 0:
-                    new_bitrate = BITRATE_LEVELS[current_idx - 1]
             
             user.current_bitrate = new_bitrate
             
@@ -238,8 +294,7 @@ class SimulationEngine:
             
             user.bitrate_history.append(user.current_bitrate)
             # NO-AVIS也计算资源消耗（用于对比）
-            capacity = self.simulator.get_user_throughput(user.user_id)
-            resources = self.allocator._compute_resources_for_bitrate(user.current_bitrate, capacity)
+            resources = self.allocator._compute_resources_for_bitrate(user.current_bitrate, true_capacity)
             user.allocated_resources.append(resources)
     
     def _record_history(self):
