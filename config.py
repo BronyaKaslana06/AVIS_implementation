@@ -23,3 +23,6 @@ ALPHA_VALUES = [0.1, 0.5, 1.0]  # 惩罚函数权重参数（论文中的alpha�
 
 # 评估参数
 BITRATE_SWITCH_WINDOW = 10  # 码率切换计数窗口（秒，论文中的W）
+
+# 仿真控制
+RANDOM_SEED = 42  # 随机数种子，保证实验可重复性

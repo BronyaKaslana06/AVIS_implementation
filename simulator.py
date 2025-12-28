@@ -124,7 +124,6 @@ class SimulationEngine:
             self.enforcer = None
         
         # NO-AVIS: 每个用户的TCP吞吐量估计器（移动平均）
-        # 论文: "keeps track of the moving average of the TCP throughput"
         self.throughput_estimates = {user.user_id: None for user in self.simulator.users}
         self.ewma_alpha = 0.3  # 指数加权移动平均的平滑系数
         
@@ -143,6 +142,9 @@ class SimulationEngine:
             'avg_bitrate': {user.user_id: [] for user in self.simulator.users},
             'total_resources_used': 0,
         }
+        
+        # 详细调度日志
+        self.scheduling_log: List[Dict] = []
     
     def run_simulation(self, duration: float = SIMULATION_TIME) -> Dict:
         """
@@ -229,6 +231,9 @@ class SimulationEngine:
             user.allocated_resources.append(
                 allocation_result.user_allocations.get(user.user_id, 0)
             )
+        
+        # 记录本轮调度详细信息
+        self._log_scheduling_round(allocation_result)
     
     def _run_no_avis_scheduling(self):
         """
@@ -296,6 +301,99 @@ class SimulationEngine:
             # NO-AVIS也计算资源消耗（用于对比）
             resources = self.allocator._compute_resources_for_bitrate(user.current_bitrate, true_capacity)
             user.allocated_resources.append(resources)
+        
+        # 记录本轮调度详细信息（NO-AVIS模式）
+        self._log_scheduling_round()
+    
+    def _log_scheduling_round(self, allocation_result=None):
+        """
+        记录每轮调度的详细信息
+        
+        Args:
+            allocation_result: Allocator返回的分配结果（仅AVIS模式）
+        """
+        round_log = {
+            'time': self.current_time,
+            'mode': 'AVIS' if self.use_avis else 'NO-AVIS',
+            'users': {}
+        }
+        
+        for user in self.simulator.users:
+            user_log = {
+                'channel_capacity': self.simulator.channel_capacities[user.user_id],
+                'current_bitrate': user.current_bitrate,
+            }
+            
+            # AVIS模式下，记录更多详细信息
+            if self.use_avis and allocation_result:
+                user_log['allocated_bitrate'] = allocation_result.user_bitrates.get(user.user_id, 0)
+                user_log['allocated_resources'] = allocation_result.user_allocations.get(user.user_id, 0)
+                
+                # Enforcer信息
+                if self.enforcer:
+                    user_log['max_rate'] = self.enforcer.max_rates.get(user.user_id, 0)
+                    user_log['min_rate'] = self.enforcer.min_rates.get(user.user_id, 0)
+                    token_status = self.enforcer.get_token_status(user.user_id)
+                    user_log['tokens'] = token_status.get('tokens', 0)
+                    user_log['bucket_capacity'] = token_status.get('capacity', 0)
+                    user_log['was_throttled'] = user_log['current_bitrate'] < user_log['allocated_bitrate']
+            else:
+                # NO-AVIS模式
+                user_log['estimated_throughput'] = self.throughput_estimates.get(user.user_id, 0)
+            
+            round_log['users'][user.user_id] = user_log
+        
+        self.scheduling_log.append(round_log)
+    
+    def save_scheduling_log(self, filepath: str):
+        """
+        将调度日志保存到CSV文件
+        
+        Args:
+            filepath: 保存路径 (应为.csv扩展名)
+        """
+        import csv
+        
+        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # 写入表头
+            if self.use_avis:
+                headers = ['time', 'user_id', 'channel_capacity', 'allocated_bitrate', 
+                          'enforced_bitrate', 'allocated_resources', 'max_rate', 
+                          'min_rate', 'tokens', 'bucket_capacity', 'was_throttled']
+            else:
+                headers = ['time', 'user_id', 'channel_capacity', 'estimated_throughput', 
+                          'selected_bitrate']
+            writer.writerow(headers)
+            
+            # 写入数据
+            for round_log in self.scheduling_log:
+                time = round_log['time']
+                for user_id, user_log in round_log['users'].items():
+                    if self.use_avis:
+                        row = [
+                            time,
+                            user_id,
+                            round(user_log['channel_capacity'], 2),
+                            user_log.get('allocated_bitrate', 0),
+                            user_log['current_bitrate'],
+                            round(user_log.get('allocated_resources', 0), 2),
+                            round(user_log.get('max_rate', 0), 2),
+                            round(user_log.get('min_rate', 0), 2),
+                            round(user_log.get('tokens', 0), 2),
+                            round(user_log.get('bucket_capacity', 0), 2),
+                            1 if user_log.get('was_throttled', False) else 0
+                        ]
+                    else:
+                        row = [
+                            time,
+                            user_id,
+                            round(user_log['channel_capacity'], 2),
+                            round(user_log.get('estimated_throughput', 0), 2),
+                            user_log['current_bitrate']
+                        ]
+                    writer.writerow(row)
     
     def _record_history(self):
         """记录当前仿真状态"""

@@ -24,10 +24,10 @@ from visualization import (
     plot_bitrate_switches, plot_metrics_comparison_bar,
     create_summary_report, plot_resource_utilization_comparison
 )
-from config import ALPHA_VALUES, SIMULATION_TIME, TOTAL_RESOURCE_BLOCKS
+from config import ALPHA_VALUES, SIMULATION_TIME, TOTAL_RESOURCE_BLOCKS, RANDOM_SEED
 
 
-def run_single_simulation(use_avis: bool, alpha: float = None, optimization_type: str = 'continuous') -> Dict:
+def run_single_simulation(use_avis: bool, alpha: float = None, optimization_type: str = 'continuous') -> tuple:
     """
     运行单次仿真
     
@@ -37,8 +37,11 @@ def run_single_simulation(use_avis: bool, alpha: float = None, optimization_type
         optimization_type: 优化方法类型 ('discrete' 或 'continuous')
     
     Returns:
-        仿真结果字典
+        (仿真结果字典, 仿真引擎对象) 元组
     """
+    # 设置随机种子，确保每次仿真的信道环境完全一致
+    np.random.seed(RANDOM_SEED)
+    
     if use_avis:
         mode_str = f"AVIS-{optimization_type.upper()} (α={alpha})"
     else:
@@ -55,7 +58,7 @@ def run_single_simulation(use_avis: bool, alpha: float = None, optimization_type
     
     print(f"  仿真完成!")
     
-    return results
+    return results, engine
 
 
 def main():
@@ -81,22 +84,26 @@ def main():
     
     # 运行NO-AVIS（只需一次）
     print("\n【基线方案】")
-    no_avis_results = run_single_simulation(use_avis=False)
+    no_avis_results, no_avis_engine = run_single_simulation(use_avis=False)
     
     # 针对每个alpha值，分别运行离散型和连续型
     discrete_results_by_alpha = {}
     continuous_results_by_alpha = {}
+    discrete_engines_by_alpha = {}
+    continuous_engines_by_alpha = {}
     
     for alpha in ALPHA_VALUES:
         print(f"\n【测试参数集 α={alpha}】")
         
         # 运行离散型AVIS
-        discrete_results = run_single_simulation(use_avis=True, alpha=alpha, optimization_type='discrete')
+        discrete_results, discrete_engine = run_single_simulation(use_avis=True, alpha=alpha, optimization_type='discrete')
         discrete_results_by_alpha[alpha] = discrete_results
+        discrete_engines_by_alpha[alpha] = discrete_engine
         
         # 运行连续型AVIS
-        continuous_results = run_single_simulation(use_avis=True, alpha=alpha, optimization_type='continuous')
+        continuous_results, continuous_engine = run_single_simulation(use_avis=True, alpha=alpha, optimization_type='continuous')
         continuous_results_by_alpha[alpha] = continuous_results
+        continuous_engines_by_alpha[alpha] = continuous_engine
         
         # 打印对比
         print("\n  【离散型AVIS vs NO-AVIS】")
@@ -273,6 +280,24 @@ def main():
         f.write(continuous_report)
     print(f"\n已保存连续型实验报告: {os.path.join(output_dir_continuous, 'EXPERIMENT_REPORT.txt')}")
     print(continuous_report) # 同时也打印到控制台
+    
+    # 保存调度详细日志
+    print("\n【保存调度详细日志】")
+    
+    # 保存NO-AVIS日志
+    no_avis_engine.save_scheduling_log(os.path.join(output_dir_discrete, 'SCHEDULING_LOG_NO_AVIS.csv'))
+    no_avis_engine.save_scheduling_log(os.path.join(output_dir_continuous, 'SCHEDULING_LOG_NO_AVIS.csv'))
+    print(f"  ✓ NO-AVIS调度日志已保存")
+    
+    # 保存各alpha值的AVIS日志
+    for alpha in ALPHA_VALUES:
+        discrete_engines_by_alpha[alpha].save_scheduling_log(
+            os.path.join(output_dir_discrete, f'SCHEDULING_LOG_AVIS_alpha_{alpha}.csv')
+        )
+        continuous_engines_by_alpha[alpha].save_scheduling_log(
+            os.path.join(output_dir_continuous, f'SCHEDULING_LOG_AVIS_alpha_{alpha}.csv')
+        )
+        print(f"  ✓ α={alpha} 调度日志已保存")
     
     # =========================================================================
     # 最终总结
